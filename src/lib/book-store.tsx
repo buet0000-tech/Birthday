@@ -3,7 +3,7 @@ import { DEFAULT_PAGES, DEFAULT_QUIZ, DEFAULT_WISH_LETTER, type BookPage, type Q
 import { delMedia, newKey } from "./media";
 import { musicCtl, type MusicMode } from "./musicctl";
 
-export const EDIT_CODE = "2525";
+export const EDIT_CODE = "1234";
 
 export interface BookSettings { musicMode: MusicMode; musicKey?: string; musicLabel?: string; quizEnabled: boolean; }
 export interface BookState { pages: BookPage[]; quiz: QuizQ[]; wish: string[]; settings: BookSettings; }
