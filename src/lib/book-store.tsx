@@ -1,7 +1,7 @@
 /* ————————————————————————————————————————————————
    BOOK STORE — draft + published model
    • Edit korle shob jay DRAFT-e
-   • "Save" chaple draft → published (+ localStorage)
+   • "Save" chaple draft → published (+ localStorage + Neon DB)
    • Save na korle website-e kono poriborton bosbe na
 ———————————————————————————————————————————————— */
 
@@ -93,18 +93,44 @@ export function BookProvider({ children }: { children: ReactNode }) {
 
   const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(draft), [state, draft]);
 
-  /* published state → localStorage */
+  /* ১. ওয়েবসাইট লোড হলে ডাটাবেজ থেকে ডেটা আনবে */
   useEffect(() => {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch { /* ignore */ }
-  }, [state]);
+    fetch('/api/book')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.pages) {
+          setState(data);
+          setDraft(clone(data));
+          try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+        }
+      })
+      .catch(err => console.error("Database load error:", err));
+  }, []);
 
   /* published settings → music controller */
   useEffect(() => {
     musicCtl.configure(state.settings.musicMode, state.settings.musicKey);
   }, [state.settings.musicMode, state.settings.musicKey]);
 
-  const saveDraft = useCallback(() => {
-    setState(clone(draft));
+  /* ২. Save বাটনে চাপলে ডাটাবেজে সেভ করবে */
+  const saveDraft = useCallback(async () => {
+    const newState = clone(draft);
+    setState(newState);
+    
+    // লোকাল ব্যাকআপ
+    try { localStorage.setItem(LS_KEY, JSON.stringify(newState)); } catch { /* ignore */ }
+    
+    // Neon ডাটাবেজে সেভ
+    try {
+      await fetch('/api/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: newState })
+      });
+    } catch (err) {
+      console.error("Database save error:", err);
+    }
+
     pendingDeletes.current.forEach((k) => void delMedia(k));
     pendingDeletes.current = [];
   }, [draft]);
