@@ -1,255 +1,103 @@
-/* ————————————————————————————————————————————————
-   BOOK STORE — draft + published model
-   • Edit korle shob jay DRAFT-e
-   • "Save" chaple draft → published (+ localStorage + Neon DB)
-   • Save na korle website-e kono poriborton bosbe na
-———————————————————————————————————————————————— */
-
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  DEFAULT_PAGES, DEFAULT_QUIZ, DEFAULT_WISH_LETTER,
-  type BookPage, type QuizQ, type Act, type ExtraKind, type SceneKey,
-} from "../data/pages";
+import { DEFAULT_PAGES, DEFAULT_QUIZ, DEFAULT_WISH_LETTER, type BookPage, type QuizQ, type Act, type ExtraKind, type SceneKey } from "../data/pages";
 import { delMedia, newKey } from "./media";
 import { musicCtl, type MusicMode } from "./musicctl";
 
 export const EDIT_CODE = "2525";
-const LS_KEY = "c25book-v5";
 
-export interface BookSettings {
-  musicMode: MusicMode;
-  musicKey?: string;
-  musicLabel?: string;
-  quizEnabled: boolean;
-}
-
-export interface BookState {
-  pages: BookPage[];
-  quiz: QuizQ[];
-  wish: string[];
-  settings: BookSettings;
-}
-
-const DEFAULT_STATE: BookState = {
-  pages: DEFAULT_PAGES,
-  quiz: DEFAULT_QUIZ,
-  wish: DEFAULT_WISH_LETTER,
-  settings: { musicMode: "synth", quizEnabled: true },
-};
-
+export interface BookSettings { musicMode: MusicMode; musicKey?: string; musicLabel?: string; quizEnabled: boolean; }
+export interface BookState { pages: BookPage[]; quiz: QuizQ[]; wish: string[]; settings: BookSettings; }
+const DEFAULT_STATE: BookState = { pages: DEFAULT_PAGES, quiz: DEFAULT_QUIZ, wish: DEFAULT_WISH_LETTER, settings: { musicMode: "synth", quizEnabled: true } };
 const clone = (s: BookState): BookState => JSON.parse(JSON.stringify(s)) as BookState;
-
-function load(): BookState {
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return clone(DEFAULT_STATE);
-    const parsed = JSON.parse(raw) as Partial<BookState>;
-    return {
-      pages: Array.isArray(parsed.pages) && parsed.pages.length ? parsed.pages : clone(DEFAULT_STATE).pages,
-      quiz: Array.isArray(parsed.quiz) ? parsed.quiz : clone(DEFAULT_STATE).quiz,
-      wish: Array.isArray(parsed.wish) && parsed.wish.length ? parsed.wish : clone(DEFAULT_STATE).wish,
-      settings: { ...DEFAULT_STATE.settings, ...(parsed.settings ?? {}) },
-    };
-  } catch {
-    return clone(DEFAULT_STATE);
-  }
+function normalize(input: unknown): BookState {
+  const p = (input && typeof input === "object" ? input : {}) as Partial<BookState>;
+  const d = clone(DEFAULT_STATE);
+  return { pages: Array.isArray(p.pages) && p.pages.length ? p.pages : d.pages, quiz: Array.isArray(p.quiz) ? p.quiz : d.quiz, wish: Array.isArray(p.wish) && p.wish.length ? p.wish : d.wish, settings: { ...d.settings, ...(p.settings ?? {}) } };
 }
 
 interface BookCtx {
-  /* published — website ei ta dekhay */
-  state: BookState;
-  /* draft — edit panel ei ta dekhay */
-  draft: BookState;
-  isDirty: boolean;
-  saveDraft: () => void;
-  discardDraft: () => void;
-  /* edit session */
-  editUnlocked: boolean;
-  unlockEdit: (code: string) => boolean;
-  lockEdit: () => void;
-  /* page actions (draft-e cholbe) */
-  updatePage: (id: string, patch: Partial<BookPage>) => void;
-  movePage: (id: string, toIndex: number) => void;
-  deletePage: (id: string) => void;
+  state: BookState; draft: BookState; isDirty: boolean; editUnlocked: boolean;
+  saveDraft: () => void; discardDraft: () => void; unlockEdit: (code: string) => boolean; lockEdit: () => void;
+  updatePage: (id: string, patch: Partial<BookPage>) => void; movePage: (id: string, toIndex: number) => void; deletePage: (id: string) => void;
   addPage: (act: Act, afterIndex: number, opts?: { extra?: ExtraKind; scene?: SceneKey }) => string;
-  /* quiz */
-  updateQuiz: (id: string, patch: Partial<QuizQ>) => void;
-  addQuiz: () => void;
-  deleteQuiz: (id: string) => void;
-  /* wish + settings */
-  updateWish: (lines: string[]) => void;
-  updateSettings: (patch: Partial<BookSettings>) => void;
-  resetAll: () => void;
+  updateQuiz: (id: string, patch: Partial<QuizQ>) => void; addQuiz: () => void; deleteQuiz: (id: string) => void;
+  updateWish: (lines: string[]) => void; updateSettings: (patch: Partial<BookSettings>) => void; resetAll: () => void;
 }
-
 const Ctx = createContext<BookCtx | null>(null);
 
-export function BookProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<BookState>(load);
-  const [draft, setDraft] = useState<BookState>(() => clone(state));
-  const [editUnlocked, setEditUnlocked] = useState(false);
-  /* save korle je media gulo mucha hobe */
-  const pendingDeletes = useRef<string[]>([]);
+async function getRemote(): Promise<BookState | null> {
+  const r = await fetch("/api/book", { cache: "no-store" });
+  const body = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(body?.error || `Database load failed (${r.status})`);
+  return body?.state ? normalize(body.state) : null;
+}
+async function saveRemote(state: BookState): Promise<void> {
+  const r = await fetch("/api/book", { method: "PUT", headers: { "content-type": "application/json" }, cache: "no-store", body: JSON.stringify({ state }) });
+  const body = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(body?.error || `Database save failed (${r.status})`);
+}
 
+export function BookProvider({ children }: { children: ReactNode }) {
+  const [state, setState] = useState<BookState>(() => clone(DEFAULT_STATE));
+  const [draft, setDraft] = useState<BookState>(() => clone(DEFAULT_STATE));
+  const [editUnlocked, setEditUnlocked] = useState(false);
+  const [dbReady, setDbReady] = useState(false);
+  const pendingDeletes = useRef<string[]>([]);
   const isDirty = useMemo(() => JSON.stringify(state) !== JSON.stringify(draft), [state, draft]);
 
-  /* ১. ওয়েবসাইট লোড হলে ডাটাবেজ থেকে ডেটা আনবে */
   useEffect(() => {
-    fetch('/api/book')
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.pages) {
-          setState(data);
-          setDraft(clone(data));
-          try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch { /* ignore */ }
-        }
-      })
-      .catch(err => console.error("Database load error:", err));
+    let alive = true;
+    getRemote().then(remote => {
+      if (!alive) return;
+      const next = remote ?? clone(DEFAULT_STATE);
+      setState(next); setDraft(clone(next)); setDbReady(true);
+    }).catch(err => {
+      console.error("Neon load failed:", err);
+      if (alive) alert("Neon database load failed. Edit mode is temporarily unavailable.");
+    });
+    return () => { alive = false; };
   }, []);
 
-  /* published settings → music controller */
-  useEffect(() => {
-    musicCtl.configure(state.settings.musicMode, state.settings.musicKey);
-  }, [state.settings.musicMode, state.settings.musicKey]);
+  useEffect(() => { musicCtl.configure(state.settings.musicMode, state.settings.musicKey); }, [state.settings.musicMode, state.settings.musicKey]);
 
-  /* ২. Save বাটনে চাপলে ডাটাবেজে সেভ করবে (Error alert সহ) */
-  const saveDraft = useCallback(async () => {
-    const newState = clone(draft);
-    
-    try {
-      const res = await fetch('/api/book', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: newState })
-      });
-      
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Server returned ${res.status}`);
+  const saveDraft = useCallback(() => {
+    if (!dbReady || !isDirty) return;
+    const next = clone(draft);
+    void (async () => {
+      try {
+        await saveRemote(next);
+        setState(next); setDraft(clone(next));
+        const deletes = [...new Set(pendingDeletes.current)]; pendingDeletes.current = [];
+        await Promise.allSettled(deletes.map(delMedia));
+        alert("Neon database-e successfully save hoyeche.");
+      } catch (err) {
+        console.error("Neon save failed:", err);
+        alert(`Save hoyni: ${err instanceof Error ? err.message : "Database error"}`);
       }
+    })();
+  }, [dbReady, draft, isDirty]);
 
-      // ডাটাবেজে সফলভাবে সেভ হলেই কেবল স্টেট ও লোকাল স্টোরেজ আপডেট হবে
-      setState(newState);
-      localStorage.setItem(LS_KEY, JSON.stringify(newState));
-      alert("ডাটাবেজে স্থায়ীভাবে সেভ হয়েছে!");
-    } catch (err: any) {
-      console.error("Database save error:", err);
-      alert(`ডাটাবেজে সেভ হয়নি! কারণ: ${err.message || err}`);
-      return;
-    }
-
-    pendingDeletes.current.forEach((k) => void delMedia(k));
-    pendingDeletes.current = [];
-  }, [draft]);
-
-  const discardDraft = useCallback(() => {
-    setDraft(clone(state));
-    pendingDeletes.current = [];
-  }, [state]);
-
-  const unlockEdit = useCallback((code: string) => {
-    const ok = code.trim() === EDIT_CODE;
-    if (ok) { setDraft(clone(state)); setEditUnlocked(true); }
-    return ok;
-  }, [state]);
-
+  const discardDraft = useCallback(() => { setDraft(clone(state)); pendingDeletes.current = []; }, [state]);
+  const unlockEdit = useCallback((code: string) => { const ok = dbReady && code.trim() === EDIT_CODE; if (ok) { setDraft(clone(state)); setEditUnlocked(true); } return ok; }, [dbReady, state]);
   const lockEdit = useCallback(() => setEditUnlocked(false), []);
 
-  /* ——— draft mutators ——— */
-  const updatePage = useCallback((id: string, patch: Partial<BookPage>) => {
-    setDraft((d) => {
-      const prev = d.pages.find((p) => p.id === id);
-      /* purono chobi/voice replace hole save-er somoy muchbo */
-      if (prev) {
-        if (patch.imgKey !== undefined && prev.imgKey && prev.imgKey !== patch.imgKey) pendingDeletes.current.push(prev.imgKey);
-        if (patch.voiceKey !== undefined && prev.voiceKey && prev.voiceKey !== patch.voiceKey) pendingDeletes.current.push(prev.voiceKey);
-      }
-      return { ...d, pages: d.pages.map((p) => (p.id === id ? { ...p, ...patch } : p)) };
-    });
-  }, []);
+  const updatePage = useCallback((id: string, patch: Partial<BookPage>) => setDraft(d => {
+    const old = d.pages.find(p => p.id === id);
+    if (old?.imgKey && patch.imgKey !== undefined && patch.imgKey !== old.imgKey) pendingDeletes.current.push(old.imgKey);
+    if (old?.voiceKey && patch.voiceKey !== undefined && patch.voiceKey !== old.voiceKey) pendingDeletes.current.push(old.voiceKey);
+    return { ...d, pages: d.pages.map(p => p.id === id ? { ...p, ...patch } : p) };
+  }), []);
+  const movePage = useCallback((id: string, toIndex: number) => setDraft(d => { const from=d.pages.findIndex(p=>p.id===id); if(from<0)return d; const pages=[...d.pages]; const [item]=pages.splice(from,1); pages.splice(Math.max(0,Math.min(pages.length,toIndex)),0,item); return {...d,pages}; }), []);
+  const deletePage = useCallback((id: string) => setDraft(d => { if(d.pages.length<=1)return d; const p=d.pages.find(x=>x.id===id); if(p?.imgKey)pendingDeletes.current.push(p.imgKey); if(p?.voiceKey)pendingDeletes.current.push(p.voiceKey); return {...d,pages:d.pages.filter(x=>x.id!==id)}; }), []);
+  const addPage = useCallback((act: Act, afterIndex: number, opts?: {extra?:ExtraKind;scene?:SceneKey}) => { const id=newKey("pg"); const page:BookPage=act==="extras"?{id,act,title:"Notun Page",extra:opts?.extra??"awards"}:act==="memories"?{id,act,title:"Notun Memory",caption:"Ekhane tomar lekha boshao…",date:"Taarikh",place:"Jayga",scene:opts?.scene??"noodles"}:act==="wish"?{id,act,title:"Wish"}:{id,act:"cartoons",title:"Notun Cartoon",caption:"Ekhane caption likho…"}; setDraft(d=>{const pages=[...d.pages];pages.splice(Math.min(pages.length,afterIndex+1),0,page);return {...d,pages};}); return id; }, []);
+  const updateQuiz = useCallback((id:string,patch:Partial<QuizQ>)=>setDraft(d=>({...d,quiz:d.quiz.map(q=>q.id===id?{...q,...patch}:q)})),[]);
+  const addQuiz = useCallback(()=>setDraft(d=>({...d,quiz:[...d.quiz,{id:newKey("q"),q:"Notun prosno?",options:["Option 1","Option 2","Option 3","Option 4"],answer:0,hint:""}]})),[]);
+  const deleteQuiz = useCallback((id:string)=>setDraft(d=>({...d,quiz:d.quiz.filter(q=>q.id!==id)})),[]);
+  const updateWish = useCallback((lines:string[])=>setDraft(d=>({...d,wish:lines})),[]);
+  const updateSettings = useCallback((patch:Partial<BookSettings>)=>setDraft(d=>({...d,settings:{...d.settings,...patch}})),[]);
+  const resetAll = useCallback(()=>{ const next=clone(DEFAULT_STATE); void saveRemote(next).then(()=>{setState(next);setDraft(clone(next));pendingDeletes.current=[];alert("Default content Neon-e save hoyeche.");}).catch(err=>alert(`Reset save hoyni: ${err instanceof Error?err.message:"Database error"}`)); },[]);
 
-  const movePage = useCallback((id: string, toIndex: number) => {
-    setDraft((d) => {
-      const from = d.pages.findIndex((p) => p.id === id);
-      if (from === -1) return d;
-      const target = Math.max(0, Math.min(d.pages.length - 1, toIndex));
-      if (target === from) return d;
-      const pages = [...d.pages];
-      const [item] = pages.splice(from, 1);
-      pages.splice(target, 0, item);
-      return { ...d, pages };
-    });
-  }, []);
-
-  const deletePage = useCallback((id: string) => {
-    setDraft((d) => {
-      if (d.pages.length <= 1) return d;
-      const page = d.pages.find((p) => p.id === id);
-      if (page?.imgKey) pendingDeletes.current.push(page.imgKey);
-      if (page?.voiceKey) pendingDeletes.current.push(page.voiceKey);
-      return { ...d, pages: d.pages.filter((p) => p.id !== id) };
-    });
-  }, []);
-
-  const addPage = useCallback((act: Act, afterIndex: number, opts?: { extra?: ExtraKind; scene?: SceneKey }) => {
-    const id = newKey("pg");
-    const fresh: BookPage = act === "extras"
-      ? { id, act, title: "Notun Page", extra: opts?.extra ?? "awards" }
-      : act === "memories"
-        ? { id, act, title: "Notun Memory", caption: "Ekhane tomar lekha boshao…", date: "Taarikh", place: "Jayga", scene: opts?.scene ?? "noodles" }
-        : act === "wish"
-          ? { id, act, title: "Wish" }
-          : { id, act: "cartoons", title: "Notun Cartoon", caption: "Ekhane caption likho…" };
-    setDraft((d) => {
-      const pages = [...d.pages];
-      pages.splice(Math.min(pages.length, afterIndex + 1), 0, fresh);
-      return { ...d, pages };
-    });
-    return id;
-  }, []);
-
-  const updateQuiz = useCallback((id: string, patch: Partial<QuizQ>) => {
-    setDraft((d) => ({ ...d, quiz: d.quiz.map((q) => (q.id === id ? { ...q, ...patch } : q)) }));
-  }, []);
-
-  const addQuiz = useCallback(() => {
-    setDraft((d) => ({
-      ...d,
-      quiz: [...d.quiz, { id: newKey("q"), q: "Notun prosno?", options: ["Option 1", "Option 2", "Option 3", "Option 4"], answer: 0, hint: "" }],
-    }));
-  }, []);
-
-  const deleteQuiz = useCallback((id: string) => {
-    setDraft((d) => ({ ...d, quiz: d.quiz.filter((q) => q.id !== id) }));
-  }, []);
-
-  const updateWish = useCallback((lines: string[]) => setDraft((d) => ({ ...d, wish: lines })), []);
-
-  const updateSettings = useCallback((patch: Partial<BookSettings>) => {
-    setDraft((d) => ({ ...d, settings: { ...d.settings, ...patch } }));
-  }, []);
-
-  const resetAll = useCallback(() => {
-    const fresh = clone(DEFAULT_STATE);
-    setState(fresh);
-    setDraft(clone(fresh));
-    pendingDeletes.current = [];
-    try { localStorage.removeItem(LS_KEY); } catch { /* ignore */ }
-  }, []);
-
-  const value = useMemo<BookCtx>(() => ({
-    state, draft, isDirty, saveDraft, discardDraft,
-    editUnlocked, unlockEdit, lockEdit,
-    updatePage, movePage, deletePage, addPage,
-    updateQuiz, addQuiz, deleteQuiz, updateWish, updateSettings, resetAll,
-  }), [state, draft, isDirty, saveDraft, discardDraft, editUnlocked, unlockEdit, lockEdit,
-    updatePage, movePage, deletePage, addPage, updateQuiz, addQuiz, deleteQuiz, updateWish, updateSettings, resetAll]);
-
+  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
-
-export function useBook() {
-  const ctx = useContext(Ctx);
-  if (!ctx) throw new Error("useBook must be used inside BookProvider");
-  return ctx;
-}
+export function useBook(){const ctx=useContext(Ctx);if(!ctx)throw new Error("useBook must be used inside BookProvider");return ctx;}
