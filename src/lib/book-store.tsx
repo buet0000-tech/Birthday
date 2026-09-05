@@ -78,7 +78,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
   }, [dbReady, draft, isDirty]);
 
   const discardDraft = useCallback(() => { setDraft(clone(state)); pendingDeletes.current = []; }, [state]);
-  const unlockEdit = useCallback((code: string) => { const ok = dbReady && code.trim() === EDIT_CODE; if (ok) { setDraft(clone(state)); setEditUnlocked(true); } return ok; }, [dbReady, state]);
+  const unlockEdit = useCallback((code: string) => { const ok = code.trim() === EDIT_CODE; if (ok) { setDraft(clone(state)); setEditUnlocked(true); } return ok; }, [state]);
   const lockEdit = useCallback(() => setEditUnlocked(false), []);
 
   const updatePage = useCallback((id: string, patch: Partial<BookPage>) => setDraft(d => {
@@ -97,7 +97,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
   const updateSettings = useCallback((patch:Partial<BookSettings>)=>setDraft(d=>({...d,settings:{...d.settings,...patch}})),[]);
   const resetAll = useCallback(()=>{ const next=clone(DEFAULT_STATE); void saveRemote(next).then(()=>{setState(next);setDraft(clone(next));pendingDeletes.current=[];alert("Default content Neon-e save hoyeche.");}).catch(err=>alert(`Reset save hoyni: ${err instanceof Error?err.message:"Database error"}`)); },[]);
 
-  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
+  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 export function useBook(){const ctx=useContext(Ctx);if(!ctx)throw new Error("useBook must be used inside BookProvider");return ctx;}
