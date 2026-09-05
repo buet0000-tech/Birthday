@@ -58,19 +58,20 @@ export function BookProvider({ children }: { children: ReactNode }) {
   useEffect(() => { musicCtl.configure(state.settings.musicMode, state.settings.musicKey); }, [state.settings.musicMode, state.settings.musicKey]);
 
   const saveDraft = useCallback(() => {
-    if (!dbReady || !isDirty) return;
+    if (!isDirty) return;
     const next = clone(draft);
     const previous = clone(state);
 
-    // Commit the UI state immediately. This removes the stale "unsaved" state
-    // while the actual Neon request is completing, so closing/locking after SAVE
-    // does not ask the user about changes that were already submitted.
+    // SAVE means the local draft is now considered committed. The Neon request
+    // is then attempted in the background. If Neon fails, restore the dirty
+    // state and show the real error instead of leaving a false "unsaved" prompt.
     setState(next);
     setDraft(clone(next));
 
     void (async () => {
       try {
         await saveRemote(next);
+        setDbReady(true);
         const deletes = [...new Set(pendingDeletes.current)];
         pendingDeletes.current = [];
         await Promise.allSettled(deletes.map(delMedia));
@@ -81,7 +82,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
         alert(`Save hoyni: ${err instanceof Error ? err.message : "Database error"}`);
       }
     })();
-  }, [dbReady, draft, isDirty, state]);
+  }, [draft, isDirty, state]);
 
   const discardDraft = useCallback(() => { setDraft(clone(state)); pendingDeletes.current = []; }, [state]);
   const unlockEdit = useCallback((code: string) => { const ok = code.trim() === EDIT_CODE; if (ok) { setDraft(clone(state)); setEditUnlocked(true); } return ok; }, [state]);
@@ -103,7 +104,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
   const updateSettings = useCallback((patch:Partial<BookSettings>)=>setDraft(d=>({...d,settings:{...d.settings,...patch}})),[]);
   const resetAll = useCallback(()=>{ const next=clone(DEFAULT_STATE); void saveRemote(next).then(()=>{setState(next);setDraft(clone(next));pendingDeletes.current=[];alert("Default content Neon-e save hoyeche.");}).catch(err=>alert(`Reset save hoyni: ${err instanceof Error?err.message:"Database error"}`)); },[]);
 
-  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
+  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 export function useBook(){const ctx=useContext(Ctx);if(!ctx)throw new Error("useBook must be used inside BookProvider");return ctx;}
