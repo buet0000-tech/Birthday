@@ -3,7 +3,7 @@ import { DEFAULT_PAGES, DEFAULT_QUIZ, DEFAULT_WISH_LETTER, type BookPage, type Q
 import { delMedia, newKey } from "./media";
 import { musicCtl, type MusicMode } from "./musicctl";
 
-export const EDIT_CODE = "1234";
+export const EDIT_CODE = "2525";
 
 export interface BookSettings { musicMode: MusicMode; musicKey?: string; musicLabel?: string; quizEnabled: boolean; }
 export interface BookState { pages: BookPage[]; quiz: QuizQ[]; wish: string[]; settings: BookSettings; }
@@ -51,10 +51,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
       if (!alive) return;
       const next = remote ?? clone(DEFAULT_STATE);
       setState(next); setDraft(clone(next)); setDbReady(true);
-    }).catch(err => {
-      console.error("Neon load failed:", err);
-      if (alive) alert("Neon database load failed. Edit mode is temporarily unavailable.");
-    });
+    }).catch(err => console.error("Neon load failed:", err));
     return () => { alive = false; };
   }, []);
 
@@ -63,19 +60,28 @@ export function BookProvider({ children }: { children: ReactNode }) {
   const saveDraft = useCallback(() => {
     if (!dbReady || !isDirty) return;
     const next = clone(draft);
+    const previous = clone(state);
+
+    // Commit the UI state immediately. This removes the stale "unsaved" state
+    // while the actual Neon request is completing, so closing/locking after SAVE
+    // does not ask the user about changes that were already submitted.
+    setState(next);
+    setDraft(clone(next));
+
     void (async () => {
       try {
         await saveRemote(next);
-        setState(next); setDraft(clone(next));
-        const deletes = [...new Set(pendingDeletes.current)]; pendingDeletes.current = [];
+        const deletes = [...new Set(pendingDeletes.current)];
+        pendingDeletes.current = [];
         await Promise.allSettled(deletes.map(delMedia));
-        alert("Neon database-e successfully save hoyeche.");
       } catch (err) {
         console.error("Neon save failed:", err);
+        setState(previous);
+        setDraft(next);
         alert(`Save hoyni: ${err instanceof Error ? err.message : "Database error"}`);
       }
     })();
-  }, [dbReady, draft, isDirty]);
+  }, [dbReady, draft, isDirty, state]);
 
   const discardDraft = useCallback(() => { setDraft(clone(state)); pendingDeletes.current = []; }, [state]);
   const unlockEdit = useCallback((code: string) => { const ok = code.trim() === EDIT_CODE; if (ok) { setDraft(clone(state)); setEditUnlocked(true); } return ok; }, [state]);
@@ -97,7 +103,7 @@ export function BookProvider({ children }: { children: ReactNode }) {
   const updateSettings = useCallback((patch:Partial<BookSettings>)=>setDraft(d=>({...d,settings:{...d.settings,...patch}})),[]);
   const resetAll = useCallback(()=>{ const next=clone(DEFAULT_STATE); void saveRemote(next).then(()=>{setState(next);setDraft(clone(next));pendingDeletes.current=[];alert("Default content Neon-e save hoyeche.");}).catch(err=>alert(`Reset save hoyni: ${err instanceof Error?err.message:"Database error"}`)); },[]);
 
-  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
+  const value=useMemo<BookCtx>(()=>({state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll}),[state,draft,isDirty,editUnlocked,saveDraft,discardDraft,unlockEdit,lockEdit,updatePage,movePage,deletePage,addPage,updateQuiz,addQuiz,deleteQuiz,updateWish,updateSettings,resetAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 export function useBook(){const ctx=useContext(Ctx);if(!ctx)throw new Error("useBook must be used inside BookProvider");return ctx;}
