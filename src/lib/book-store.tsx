@@ -112,23 +112,30 @@ export function BookProvider({ children }: { children: ReactNode }) {
     musicCtl.configure(state.settings.musicMode, state.settings.musicKey);
   }, [state.settings.musicMode, state.settings.musicKey]);
 
-  /* ২. Save বাটনে চাপলে ডাটাবেজে সেভ করবে */
+  /* ২. Save বাটনে চাপলে ডাটাবেজে সেভ করবে (Error alert সহ) */
   const saveDraft = useCallback(async () => {
     const newState = clone(draft);
-    setState(newState);
     
-    // লোকাল ব্যাকআপ
-    try { localStorage.setItem(LS_KEY, JSON.stringify(newState)); } catch { /* ignore */ }
-    
-    // Neon ডাটাবেজে সেভ
     try {
-      await fetch('/api/book', {
+      const res = await fetch('/api/book', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state: newState })
       });
-    } catch (err) {
+      
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Server returned ${res.status}`);
+      }
+
+      // ডাটাবেজে সফলভাবে সেভ হলেই কেবল স্টেট ও লোকাল স্টোরেজ আপডেট হবে
+      setState(newState);
+      localStorage.setItem(LS_KEY, JSON.stringify(newState));
+      alert("ডাটাবেজে স্থায়ীভাবে সেভ হয়েছে!");
+    } catch (err: any) {
       console.error("Database save error:", err);
+      alert(`ডাটাবেজে সেভ হয়নি! কারণ: ${err.message || err}`);
+      return;
     }
 
     pendingDeletes.current.forEach((k) => void delMedia(k));
