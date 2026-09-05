@@ -1,99 +1,58 @@
-/* ————————————————————————————————————————————————
-   MEDIA STORE — chobi / voice / music blob gulo
-   IndexedDB te thake, tai localStorage limit-e atke jay na.
-———————————————————————————————————————————————— */
-
 import { useEffect, useState } from "react";
 
-const DB_NAME = "c25-media";
-const STORE = "blobs";
-let dbPromise: Promise<IDBDatabase> | null = null;
+export const MAX_MEDIA_BYTES = 4 * 1024 * 1024;
+const mediaUrl = (key: string) => `/api/media?key=${encodeURIComponent(key)}`;
 
-function openDB(): Promise<IDBDatabase> {
-  if (!dbPromise) {
-    dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
-      req.onupgradeneeded = () => {
-        const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    });
-  }
-  return dbPromise;
+async function errorText(r: Response) {
+  const body = await r.json().catch(() => null);
+  return body?.error || `Media request failed (${r.status})`;
 }
 
 export async function putMedia(key: string, blob: Blob): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(blob, key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  if (!key) throw new Error("Media key is required.");
+  if (blob.size > MAX_MEDIA_BYTES) throw new Error("File too large. Maximum size is 4 MB.");
+  const r = await fetch(mediaUrl(key), { method: "PUT", headers: { "content-type": blob.type || "application/octet-stream" }, body: blob });
+  if (!r.ok) throw new Error(await errorText(r));
 }
 
 export async function getMedia(key: string): Promise<Blob | undefined> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(key);
-    req.onsuccess = () => resolve(req.result as Blob | undefined);
-    req.onerror = () => reject(req.error);
-  });
+  if (!key) return undefined;
+  const r = await fetch(mediaUrl(key), { cache: "no-store" });
+  if (r.status === 404) return undefined;
+  if (!r.ok) throw new Error(await errorText(r));
+  return r.blob();
 }
 
 export async function delMedia(key: string): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve();
-  });
+  if (!key) return;
+  const r = await fetch(mediaUrl(key), { method: "DELETE" });
+  if (!r.ok) throw new Error(await errorText(r));
 }
 
-export const newKey = (prefix: string) =>
-  `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+export const newKey = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-/** Boro chobi resize kore jpeg banay — jate storage halka thake. */
 export async function shrinkImage(file: File, maxSide = 1400, quality = 0.85): Promise<Blob> {
   try {
     const bitmap = await createImageBitmap(file);
     const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
-    const w = Math.round(bitmap.width * scale);
-    const h = Math.round(bitmap.height * scale);
-    const canvas = document.createElement("canvas");
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return file;
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    bitmap.close?.();
-    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", quality));
-    return blob ?? file;
-  } catch {
-    return file;
-  }
+    const w = Math.round(bitmap.width * scale), h = Math.round(bitmap.height * scale);
+    const canvas = document.createElement("canvas"); canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d"); if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, w, h); bitmap.close?.();
+    return await new Promise<Blob>(resolve => canvas.toBlob(b => resolve(b || file), "image/jpeg", quality));
+  } catch { return file; }
 }
 
-/** key theke object-URL banay ar cleanup kore. */
 export function useMediaUrl(key?: string): string | undefined {
-  const [url, setUrl] = useState<string | undefined>(undefined);
+  const [url, setUrl] = useState<string>();
   useEffect(() => {
-    let revoked: string | undefined;
-    let alive = true;
+    let alive = true, objectUrl: string | undefined;
     if (!key) { setUrl(undefined); return; }
-    getMedia(key).then((blob) => {
+    getMedia(key).then(blob => {
       if (!alive || !blob) return;
-      const u = URL.createObjectURL(blob);
-      revoked = u;
-      setUrl(u);
-    }).catch(() => undefined);
-    return () => {
-      alive = false;
-      if (revoked) URL.revokeObjectURL(revoked);
-    };
+      objectUrl = URL.createObjectURL(blob); setUrl(objectUrl);
+    }).catch(() => { if (alive) setUrl(undefined); });
+    return () => { alive = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [key]);
   return url;
 }
